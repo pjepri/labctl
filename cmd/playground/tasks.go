@@ -21,11 +21,20 @@ type tasksOptions struct {
 	failFast bool
 	timeout  time.Duration
 	kind     string
+	init     bool
 }
 
 func (opts *tasksOptions) validate() error {
 	if opts.output != "table" && opts.output != "json" && opts.output != "name" && opts.output != "none" {
 		return fmt.Errorf("invalid output format: %s (supported formats: table, json, name, none)", opts.output)
+	}
+
+	if opts.init && opts.kind != "" {
+		return fmt.Errorf("cannot use both --init and --kind flags")
+	}
+
+	if opts.init {
+		opts.kind = "init"
 	}
 
 	if opts.kind != "" && opts.kind != "init" && opts.kind != "helper" && opts.kind != "regular" {
@@ -88,6 +97,13 @@ func newTasksCommand(cli labcli.CLI) *cobra.Command {
 		"Filter tasks by kind: init, helper, regular",
 	)
 
+	flags.BoolVar(
+		&opts.init,
+		"init",
+		false,
+		"Shorthand for --kind init",
+	)
+
 	return cmd
 }
 
@@ -110,35 +126,19 @@ func runListTasks(ctx context.Context, cli labcli.CLI, playgroundID string, opts
 			return play, nil
 		}
 
-		if opts.kind == "helper" {
-			return play, nil
-		}
+		waitTasks := filterTasksByKind(play.Tasks, opts.kind)
 
-		if opts.kind == "init" && play.IsInitialized() {
-			return play, nil
-		}
-
-		if play.IsInitialized() {
-			spin.Prefix = fmt.Sprintf(
-				"Waiting for tasks to complete: %d/%d ",
-				play.CountCompletedTasks(), play.CountTasks(),
-			)
-		} else {
-			spin.Prefix = fmt.Sprintf(
-				"Warming up playground... Init tasks completed: %d/%d ",
-				play.CountCompletedInitTasks(), play.CountInitTasks(),
-			)
-		}
+		completed, total := countFinishedTasks(waitTasks)
+		spin.Prefix = fmt.Sprintf(
+			"Waiting for tasks to complete: %d/%d ",
+			completed, total,
+		)
 
 		spin.Start()
 
 		var failed, unfinished bool
 
-		for _, task := range play.Tasks {
-			if task.Helper {
-				continue
-			}
-
+		for _, task := range waitTasks {
 			if task.Status == api.PlayTaskStatusFailed {
 				failed = true
 
@@ -249,6 +249,16 @@ func formatTaskStatus(status api.PlayTaskStatus) string {
 
 func taskIsFinished(task api.PlayTask) bool {
 	return task.Status == api.PlayTaskStatusCompleted || task.Status == api.PlayTaskStatusFailed
+}
+
+func countFinishedTasks(tasks map[string]api.PlayTask) (finished, total int) {
+	for _, task := range tasks {
+		total++
+		if taskIsFinished(task) {
+			finished++
+		}
+	}
+	return
 }
 
 func filterTasksByKind(tasks map[string]api.PlayTask, kind string) map[string]api.PlayTask {
